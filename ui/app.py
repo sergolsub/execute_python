@@ -29,69 +29,81 @@ reqs     = st.file_uploader("Upload your requirements.txt", type="txt")
 if st.button("Run"):
     if not (zip_file and s3_link and reqs):
         st.error("All three inputs are required.")
-    else:
-        task_id = str(int(time.time()))
+        st.stop()
 
-        # 1) Upload the user’s code and requirements
-        s3.upload_fileobj(zip_file, S3_BUCKET, f"{task_id}/code.zip")
-        s3.upload_fileobj(reqs,    S3_BUCKET, f"{task_id}/requirements.txt")
+    task_id = str(int(time.time()))
+    st.write("🔧 Debug — Task ID:", task_id)
 
-        # 2) Launch the Fargate task
-        resp = ecs.run_task(
-            cluster=CLUSTER_NAME,
-            launchType="FARGATE",
-            taskDefinition=WORKER_FAMILY,
-            networkConfiguration={
-                "awsvpcConfiguration": {
-                    "subnets":        SUBNETS,
-                    "assignPublicIp": "ENABLED",
-                    "securityGroups": ECS_SG
-                }
-            },
-            overrides={
-              "containerOverrides": [{
-                "name": "worker",
-                "environment": [
-                  {"name": "CODE_ZIP_S3", "value": f"s3://{S3_BUCKET}/{task_id}/code.zip"},
-                  {"name": "REQS_S3",     "value": f"s3://{S3_BUCKET}/{task_id}/requirements.txt"},
-                  {"name": "DF_S3",       "value": s3_link},
-                  {"name": "OUT_PREFIX",  "value": f"{task_id}/out"},
-                ]
-              }]
+    # 1) Upload
+    s3.upload_fileobj(zip_file, S3_BUCKET, f"{task_id}/code.zip")
+    s3.upload_fileobj(reqs,    S3_BUCKET, f"{task_id}/requirements.txt")
+    st.success("✓ Uploaded ZIP & requirements")
+
+    # 2) Launch task
+    resp = ecs.run_task(
+        cluster=CLUSTER_NAME,
+        launchType="FARGATE",
+        taskDefinition=WORKER_FAMILY,
+        networkConfiguration={
+            "awsvpcConfiguration": {
+                "subnets":        SUBNETS,
+                "assignPublicIp": "ENABLED",
+                "securityGroups": ECS_SG
             }
-        )
+        },
+        overrides={"containerOverrides": [{
+            "name": "worker",
+            "environment": [
+                {"name": "CODE_ZIP_S3", "value": f"s3://{S3_BUCKET}/{task_id}/code.zip"},
+                {"name": "REQS_S3",     "value": f"s3://{S3_BUCKET}/{task_id}/requirements.txt"},
+                {"name": "DF_S3",       "value": s3_link},
+                {"name": "OUT_PREFIX",  "value": f"{task_id}/out"},
+            ]
+        }]}
+    )
+    st.write("🔧 Debug — run_task response:", resp)
 
-        tasks = resp.get("tasks", [])
-        if not tasks:
-            st.error("Failed to start ECS task.")
-        else:
-            arn = tasks[0]["taskArn"]
-            st.write("🚀 Task launched:", arn)
+    tasks = resp.get("tasks", [])
+    if not tasks:
+        st.error("Failed to start ECS task.")
+        st.stop()
 
-            # 3) Wait for it to finish
-            ecs.get_waiter("tasks_stopped").wait(cluster=CLUSTER_NAME, tasks=[arn])
+    arn = tasks[0]["taskArn"]
+    st.success(f"🚀 Task launched: {arn}")
 
-            # 4) Fetch logs robustly
-            log_group = "/ecs/worker"
-            task_suffix = arn.split("/")[-1]
+    # 3) Wait for it to finish
+    st.write("⏳ Waiting for task to stop…")
+    ecs.get_waiter("tasks_stopped").wait(cluster=CLUSTER_NAME, tasks=[arn])
+    st.success("✅ Task has stopped")
 
-            # Describe streams by prefix, limit to 1
-            streams = logs.describe_log_streams(
-                logGroupName=log_group,
-                logStreamNamePrefix=task_suffix,
-                limit=1
-            )["logStreams"]
+    # 4) Fetch logs
+    log_group   = "/ecs/worker"
+    task_suffix = arn.split("/")[-1]
+    st.write("🔧 Debug — Looking for streams with prefix:", task_suffix)
 
-            if not streams:
-                st.warning(f"No log stream found yet for task {task_suffix}. Try again in a moment.")
-            else:
-                stream_name = streams[0]["logStreamName"]
-                events = logs.get_log_events(
-                    logGroupName=log_group,
-                    logStreamName=stream_name,
-                    startFromHead=True
-                )["events"]
+    streams_resp = logs.describe_log_streams(
+        logGroupName        = log_group,
+        logStreamNamePrefix = "worker",  # match your awslogs-stream-prefix
+        limit               = 50
+    )
+    st.write("🔧 Debug — describe_log_streams response:", streams_resp)
 
-                st.subheader("Worker logs")
-                for e in events:
-                    st.text(e["message"])
+    streams = streams_resp.get("logStreams", [])
+    matched = [s["logStreamName"] for s in streams if task_suffix in s["logStreamName"]]
+    st.write("🔧 Debug — filtered matching streams:", matched)
+
+    if not matched:
+        st.warning(f"No log stream found for task {task_suffix}. Try again in a moment.")
+    else:
+        stream_name = matched[0]
+        st.write("🔧 Debug — fetching events from stream:", stream_name)
+        events = logs.get_log_events(
+            logGroupName  = log_group,
+            logStreamName = stream_name,
+            startFromHead = True
+        )["events"]
+
+        st.subheader("📝 Worker Logs")
+        for e in events:
+            st.text(e["message"])
+
