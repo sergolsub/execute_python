@@ -66,6 +66,10 @@ resource "aws_iam_role_policy" "codebuild_artifacts_upload" {
     ]
   })
 }
+resource "aws_iam_role_policy_attachment" "codepipeline_attach_ecs" {
+  role       = aws_iam_role.codepipeline_service.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonECS_FullAccess"
+}
 # IAM Roles and Attachments
 resource "aws_iam_role" "ecs_task_execution" {
   name               = "${var.project_name}-ecs-task-exec-role"
