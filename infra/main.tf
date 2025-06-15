@@ -161,26 +161,31 @@ module "network" {
   name = "${var.project_name}-vpc"
   cidr = "10.0.0.0/16"
 
-  # two AZs for high availability
-  azs  = ["${var.aws_region}a", "${var.aws_region}b"]
+  # two AZs for HA
+  azs = [
+    "${var.aws_region}a",
+    "${var.aws_region}b",
+  ]
 
-  # public subnets only (tasks get public IPs)
-  public_subnets = ["10.0.1.0/24", "10.0.2.0/24"]
+  # ONLY public subnets (we’ll give Fargate tasks public IPs)
+  public_subnets = [
+    "10.0.1.0/24",  # AZ a
+    "10.0.2.0/24",  # AZ b
+  ]
 
-  # ensure the IGW and DNS are set up
+  #–– Ensure IGW + public route tables are created for those subnets ––
   create_igw           = true
   enable_dns_support   = true
   enable_dns_hostnames = true
 
-  # tag your public subnets for any integrations (ALB, Kubernetes, etc.)
+  # tag so AWS (and k8s, if you ever use it) knows these are public/ELB subnets
   public_subnet_tags = {
     "kubernetes.io/role/elb" = "1"
   }
 
-  # (optional) add common tags to all resources
   tags = {
-    "Environment" = "prod"
-    "ManagedBy"   = "Terraform"
+    Environment = "prod"
+    ManagedBy   = "Terraform"
   }
 }
 

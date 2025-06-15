@@ -1,61 +1,72 @@
+import os, json, time
 import streamlit as st
-import boto3, json, time
+import boto3
 
+# Read from env vars (not st.secrets)
+AWS_REGION    = os.environ["AWS_REGION"]
+S3_BUCKET     = os.environ["S3_BUCKET"]
+CLUSTER_NAME  = os.environ["CLUSTER_NAME"]
+WORKER_FAMILY = os.environ["WORKER_FAMILY"]
+SUBNETS       = os.environ["SUBNETS"].split(",")
+
+st.set_page_config(page_title="Python Code Runner")
 st.title("📦 Python Code Runner")
 
-s3 = boto3.client("s3", region_name=st.secrets["AWS_REGION"])
-ecs = boto3.client("ecs", region_name=st.secrets["AWS_REGION"])
+s3  = boto3.client("s3",    region_name=AWS_REGION)
+ecs = boto3.client("ecs",   region_name=AWS_REGION)
+logs= boto3.client("logs",  region_name=AWS_REGION)
 
 zip_file = st.file_uploader("Upload your code ZIP", type="zip")
-s3_link = st.text_input("S3 link to input dataframe")
-reqs    = st.file_uploader("requirements.txt", type="txt")
+s3_link  = st.text_input("S3 link to input dataframe (s3://…)")
+reqs     = st.file_uploader("Upload your requirements.txt", type="txt")
 
 if st.button("Run"):
     if not (zip_file and s3_link and reqs):
         st.error("All three inputs are required.")
     else:
-        # 1) upload to a temp bucket
-        bucket = st.secrets["S3_BUCKET"]
         task_id = str(int(time.time()))
-        s3.upload_fileobj(zip_file, bucket, f"{task_id}/code.zip")
-        s3.upload_fileobj(reqs, bucket, f"{task_id}/requirements.txt")
-
+        # 1) upload
+        s3.upload_fileobj(zip_file, S3_BUCKET, f"{task_id}/code.zip")
+        s3.upload_fileobj(reqs,    S3_BUCKET, f"{task_id}/requirements.txt")
         # 2) run task
         resp = ecs.run_task(
-            cluster=st.secrets["CLUSTER_NAME"],
+            cluster=CLUSTER_NAME,
             launchType="FARGATE",
-            taskDefinition=st.secrets["WORKER_FAMILY"],
+            taskDefinition=WORKER_FAMILY,
             networkConfiguration={
-                "awsvpcConfiguration":{
-                    "subnets": st.secrets["SUBNETS"].split(","),
-                    "assignPublicIp":"ENABLED"
+                "awsvpcConfiguration": {
+                    "subnets": SUBNETS,
+                    "assignPublicIp": "ENABLED"
                 }
             },
-            overrides={"containerOverrides":[
-                {"name":"worker","environment":[
-                    {"name":"CODE_ZIP_S3","value":f"s3://{bucket}/{task_id}/code.zip"},
-                    {"name":"REQS_S3","value":f"s3://{bucket}/{task_id}/requirements.txt"},
-                    {"name":"DF_S3","value":s3_link},
-                    {"name":"OUT_PREFIX","value":f"{task_id}/out"}
-                ]}
-            ]]
+            overrides={"containerOverrides": [{
+                "name": "worker",
+                "environment": [
+                    {"name": "CODE_ZIP_S3", "value": f"s3://{S3_BUCKET}/{task_id}/code.zip"},
+                    {"name": "REQS_S3",     "value": f"s3://{S3_BUCKET}/{task_id}/requirements.txt"},
+                    {"name": "DF_S3",       "value": s3_link},
+                    {"name": "OUT_PREFIX",  "value": f"{task_id}/out"},
+                ]
+            }]}
         )
-        arn = resp["tasks"][0]["taskArn"]
-        st.write("🚀 Task launched:", arn)
-
-        # 3) wait for stop
-        waiter = ecs.get_waiter("tasks_stopped")
-        waiter.wait(cluster=st.secrets["CLUSTER_NAME"], tasks=[arn])
-
-        # 4) fetch logs & results
-        logs = boto3.client("logs", region_name=st.secrets["AWS_REGION"])
-        log_group = "/ecs/worker"
-        stream = arn.split("/")[-1]
-        events = logs.get_log_events(logGroupName=log_group, logStreamName=stream)["events"]
-        for e in events: st.text(e["message"])
-
-        # 5) read result JSON
-        out_json = f"s3://{bucket}/{task_id}/out/result.json"
-        out_df_s3 = f"s3://{bucket}/{task_id}/out/dataframe.csv"
-        st.json(json.loads(s3.get_object(Bucket=bucket, Key=f"{task_id}/out/result.json")["Body"].read()))
-        st.write("Output dataframe:", out_df_s3)
+        tasks = resp.get("tasks", [])
+        if not tasks:
+            st.error("Failed to start ECS task.")
+        else:
+            arn = tasks[0]["taskArn"]
+            st.write("🚀 Task launched:", arn)
+            # 3) wait
+            ecs.get_waiter("tasks_stopped").wait(cluster=CLUSTER_NAME, tasks=[arn])
+            # 4) logs
+            log_group  = "/ecs/worker"
+            log_stream = arn.split("/")[-1]
+            events     = logs.get_log_events(logGroupName=log_group, logStreamName=log_stream)["events"]
+            st.subheader("Worker logs")
+            for e in events:
+                st.text(e["message"])
+            # 5) results
+            res = json.loads(s3.get_object(Bucket=S3_BUCKET, Key=f"{task_id}/out/result.json")["Body"].read())
+            st.subheader("Result JSON")
+            st.json(res)
+            st.subheader("Output DataFrame")
+            st.markdown(f"s3://{S3_BUCKET}/{task_id}/out/dataframe.csv")
