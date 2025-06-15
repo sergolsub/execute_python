@@ -75,37 +75,23 @@ if st.button("Run"):
             log_group = "/ecs/worker"
             task_suffix = arn.split("/")[-1]
 
-            # Find the stream by prefix
+            # Describe streams by prefix, limit to 1
             streams = logs.describe_log_streams(
-                logGroupName        = log_group,
-                logStreamNamePrefix = task_suffix,
-                orderBy             = "LastEventTime",
-                descending          = True,
-                limit               = 1
+                logGroupName=log_group,
+                logStreamNamePrefix=task_suffix,
+                limit=1
             )["logStreams"]
 
             if not streams:
-                st.warning(f"No log stream found for task {task_suffix}. Try again in a moment.")
+                st.warning(f"No log stream found yet for task {task_suffix}. Try again in a moment.")
             else:
                 stream_name = streams[0]["logStreamName"]
-                try:
-                    events = logs.get_log_events(
-                        logGroupName  = log_group,
-                        logStreamName = stream_name,
-                        startFromHead = True
-                    )["events"]
-                    st.subheader("Worker logs")
-                    for e in events:
-                        st.text(e["message"])
-                except botocore.exceptions.ResourceNotFoundException:
-                    st.error(f"Log stream {stream_name} not found. Try again shortly.")
+                events = logs.get_log_events(
+                    logGroupName=log_group,
+                    logStreamName=stream_name,
+                    startFromHead=True
+                )["events"]
 
-            # 5) Load and display the JSON result + link to CSV
-            res_obj = s3.get_object(Bucket=S3_BUCKET, Key=f"{task_id}/out/result.json")
-            result  = json.loads(res_obj["Body"].read())
-            st.subheader("Result JSON")
-            st.json(result)
-
-            out_csv_path = f"s3://{S3_BUCKET}/{task_id}/out/dataframe.csv"
-            st.subheader("Output DataFrame")
-            st.markdown(out_csv_path)
+                st.subheader("Worker logs")
+                for e in events:
+                    st.text(e["message"])
