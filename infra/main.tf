@@ -55,7 +55,6 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution_attach" {
   role       = aws_iam_role.ecs_task_execution.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
-
 resource "aws_iam_role" "codebuild_service" {
   name               = "${var.project_name}-codebuild-role"
   assume_role_policy = data.aws_iam_policy_document.codebuild_assume.json
@@ -72,7 +71,6 @@ resource "aws_iam_role_policy_attachment" "codebuild_attach_s3" {
   role       = aws_iam_role.codebuild_service.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess"
 }
-
 resource "aws_iam_role" "codepipeline_service" {
   name               = "${var.project_name}-codepipeline-role"
   assume_role_policy = data.aws_iam_policy_document.codepipeline_assume.json
@@ -89,6 +87,10 @@ resource "aws_iam_role_policy_attachment" "codepipeline_attach_iam" {
   role       = aws_iam_role.codepipeline_service.name
   policy_arn = "arn:aws:iam::aws:policy/IAMReadOnlyAccess"
 }
+resource "aws_iam_role_policy_attachment" "codepipeline_attach_codebuild" {
+  role       = aws_iam_role.codepipeline_service.name
+  policy_arn = "arn:aws:iam::aws:policy/AWSCodeBuildDeveloperAccess"
+}
 
 # Network: VPC & Subnets
 module "network" {
@@ -97,7 +99,6 @@ module "network" {
   name    = "${var.project_name}-vpc"
   cidr    = "10.0.0.0/16"
   azs     = ["${var.aws_region}a", "${var.aws_region}b"]
-
   public_subnets = ["10.0.1.0/24", "10.0.2.0/24"]
 }
 
@@ -114,14 +115,12 @@ resource "aws_security_group" "alb" {
   name        = "${var.project_name}-alb-sg"
   description = "Allow HTTP traffic"
   vpc_id      = module.network.vpc_id
-
   ingress {
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
-
   egress {
     from_port   = 0
     to_port     = 0
@@ -144,6 +143,14 @@ resource "aws_lb_target_group" "ui_tg" {
   protocol    = "HTTP"
   vpc_id      = module.network.vpc_id
   target_type = "ip"
+  health_check {
+    path                = "/"
+    matcher             = "200-399"
+    interval            = 30
+    timeout             = 5
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+  }
 }
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.alb.arn
@@ -170,7 +177,7 @@ resource "aws_s3_bucket_versioning" "cp_artifacts" {
   }
 }
 
-# Local ARNs referencing IAM roles
+# Locals for IAM roles
 locals {
   ecs_exec_role_arn     = aws_iam_role.ecs_task_execution.arn
   codebuild_role_arn    = aws_iam_role.codebuild_service.arn
@@ -185,18 +192,15 @@ resource "aws_ecs_task_definition" "ui" {
   cpu                      = "512"
   memory                   = "1024"
   execution_role_arn       = local.ecs_exec_role_arn
-
-  container_definitions = jsonencode([
-    {
-      name         = "streamlit-ui"
-      image        = "${aws_ecr_repository.ui.repository_url}:latest"
-      portMappings = [{ containerPort = 8501, protocol = "tcp" }]
-      environment  = [
-        { name = "AWS_REGION", value = var.aws_region },
-        { name = "CLUSTER_NAME", value = aws_ecs_cluster.this.name }
-      ]
-    }
-  ])
+  container_definitions = jsonencode([{
+    name         = "streamlit-ui"
+    image        = "${aws_ecr_repository.ui.repository_url}:latest"
+    portMappings = [{ containerPort = 8501, protocol = "tcp" }]
+    environment  = [
+      { name = "AWS_REGION", value = var.aws_region },
+      { name = "CLUSTER_NAME", value = aws_ecs_cluster.this.name }
+    ]
+  }])
 }
 
 # ECS Service for UI
@@ -206,18 +210,15 @@ resource "aws_ecs_service" "ui" {
   task_definition = aws_ecs_task_definition.ui.arn
   desired_count   = 1
   launch_type     = "FARGATE"
-
   network_configuration {
     subnets         = module.network.public_subnets
     security_groups = [aws_security_group.alb.id]
   }
-
   load_balancer {
     target_group_arn = aws_lb_target_group.ui_tg.arn
     container_name   = "streamlit-ui"
     container_port   = 8501
   }
-
   depends_on = [aws_lb_listener.http]
 }
 
@@ -225,17 +226,12 @@ resource "aws_ecs_service" "ui" {
 resource "aws_codebuild_project" "build" {
   name         = "${var.project_name}-build"
   service_role = local.codebuild_role_arn
-
-  artifacts {
-    type = "NO_ARTIFACTS"
-  }
-
+  artifacts { type = "NO_ARTIFACTS" }
   environment {
     compute_type    = "BUILD_GENERAL1_SMALL"
     image           = "aws/codebuild/standard:6.0"
     type            = "LINUX_CONTAINER"
     privileged_mode = true
-
     environment_variable {
       name  = "UI_ECR"
       value = aws_ecr_repository.ui.repository_url
@@ -245,7 +241,6 @@ resource "aws_codebuild_project" "build" {
       value = aws_ecr_repository.worker.repository_url
     }
   }
-
   source {
     type            = "GITHUB"
     location        = var.github_repo_https
@@ -273,7 +268,6 @@ resource "aws_codepipeline" "pipeline" {
       provider         = "GitHub"
       version          = "1"
       output_artifacts = ["source_out"]
-
       configuration = {
         Owner      = var.github_owner
         Repo       = var.github_repo
@@ -293,7 +287,6 @@ resource "aws_codepipeline" "pipeline" {
       version          = "1"
       input_artifacts  = ["source_out"]
       output_artifacts = ["build_out"]
-
       configuration = {
         ProjectName = aws_codebuild_project.build.name
       }
@@ -303,13 +296,12 @@ resource "aws_codepipeline" "pipeline" {
   stage {
     name = "Deploy"
     action {
-      name            = "DeployToECS"
-      category        = "Deploy"
-      owner           = "AWS"
-      provider        = "ECS"
-      version         = "1"
-      input_artifacts = ["build_out"]
-
+      name             = "DeployToECS"
+      category         = "Deploy"
+      owner            = "AWS"
+      provider         = "ECS"
+      version          = "1"
+      input_artifacts  = ["build_out"]
       configuration = {
         ClusterName = aws_ecs_cluster.this.name
         ServiceName = aws_ecs_service.ui.name
@@ -320,6 +312,4 @@ resource "aws_codepipeline" "pipeline" {
 }
 
 # Output UI URL
-output "ui_url" {
-  value = aws_lb.alb.dns_name
-}
+output "ui_url" { value = aws_lb.alb.dns_name }
