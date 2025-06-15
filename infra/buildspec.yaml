@@ -19,6 +19,7 @@ phases:
       - echo Pushing images…
       - docker push $UI_IMAGE
       - docker push $WORKER_IMAGE
+      - cd $CODEBUILD_SRC_DIR
       - printf '[{"name":"streamlit-ui","imageUri":"%s"}]\n' "$UI_IMAGE" > imagedefinitions.json
 
 artifacts:
