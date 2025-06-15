@@ -66,6 +66,14 @@ resource "aws_iam_role_policy" "codebuild_artifacts_upload" {
     ]
   })
 }
+
+resource "aws_s3_bucket" "data" {
+  bucket        = "${var.project_name}-data"
+  force_destroy = true
+  tags = {
+    Name = "${var.project_name}-data-bucket"
+  }
+}
 resource "aws_security_group" "ecs_tasks" {
   name        = "${var.project_name}-ecs-sg"
   description = "Allow ALB ECS on 8501, and all outbound"
@@ -275,30 +283,138 @@ locals {
   codepipeline_role_arn = aws_iam_role.codepipeline_service.arn
 }
 
+# IAM Role for the Streamlit UI container (so it can call ECS, S3, Logs)
+resource "aws_iam_role" "ui_task_role" {
+  name = "${var.project_name}-ui-task-role"
+  assume_role_policy = data.aws_iam_policy_document.ecs_task_assume.json
+}
+
+resource "aws_iam_role_policy_attachment" "ui_task_attach_s3" {
+  role       = aws_iam_role.ui_task_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonS3FullAccess"
+}
+resource "aws_iam_role_policy_attachment" "ui_task_attach_ecs" {
+  role       = aws_iam_role.ui_task_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonECS_FullAccess"
+}
+resource "aws_iam_role_policy_attachment" "ui_task_attach_logs" {
+  role       = aws_iam_role.ui_task_role.name
+  policy_arn = "arn:aws:iam::aws:policy/CloudWatchLogsReadOnlyAccess"
+}
+
+# ECR API endpoint
+resource "aws_vpc_endpoint" "ecr_api" {
+  vpc_id            = module.network.vpc_id
+  service_name      = "com.amazonaws.${var.aws_region}.ecr.api"
+  vpc_endpoint_type = "Interface"
+  subnet_ids        = module.network.public_subnets
+  security_group_ids = [ aws_security_group.ecs_tasks.id ]
+}
+
+# ECR DKR endpoint (for the actual Docker pull)
+resource "aws_vpc_endpoint" "ecr_dkr" {
+  vpc_id            = module.network.vpc_id
+  service_name      = "com.amazonaws.${var.aws_region}.ecr.dkr"
+  vpc_endpoint_type = "Interface"
+  subnet_ids        = module.network.public_subnets
+  security_group_ids = [ aws_security_group.ecs_tasks.id ]
+}
+
+# S3 Gateway endpoint (for pulling data & writing results)
+resource "aws_vpc_endpoint" "s3" {
+  vpc_endpoint_type = "Gateway"
+  vpc_id            = module.network.vpc_id
+  service_name      = "com.amazonaws.${var.aws_region}.s3"
+  route_table_ids   = module.network.public_route_table_ids
+}
+
 # ECS Task Definition for UI
+resource "aws_ecs_task_definition" "worker" {
+  family                   = "${var.project_name}-worker"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = "512"
+  memory                   = "1024"
+  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+  task_role_arn            = aws_iam_role.ui_task_role.arn
+
+  container_definitions = jsonencode([
+    {
+      name      = "worker"
+      image     = "${aws_ecr_repository.worker.repository_url}:latest"
+      essential = true
+
+      environment = [
+        { name = "AWS_REGION", value = var.aws_region },
+        { name = "OUT_BUCKET", value = aws_s3_bucket.data.bucket },
+        { name = "ECS_SG",       value = aws_security_group.ecs_tasks.id }
+      ]
+
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = "/ecs/worker"
+          "awslogs-region"        = var.aws_region
+          "awslogs-stream-prefix" = "worker"
+        }
+      }
+    }
+  ])
+}
+
 resource "aws_ecs_task_definition" "ui" {
   family                   = "${var.project_name}-ui"
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
   cpu                      = "512"
   memory                   = "1024"
-  execution_role_arn       = local.ecs_exec_role_arn
-  container_definitions = jsonencode([{
-    name         = "streamlit-ui"
-    image        = "${aws_ecr_repository.ui.repository_url}:latest"
-    portMappings = [{ containerPort = 8501, protocol = "tcp" }]
-    environment  = [
-      { name = "AWS_REGION", value = var.aws_region },
-      { name = "CLUSTER_NAME", value = aws_ecs_cluster.this.name }
-    ]
-  }])
+  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+  task_role_arn            = aws_iam_role.ui_task_role.arn
+
+  container_definitions = jsonencode([
+    {
+      name         = "streamlit-ui"
+      image        = "${aws_ecr_repository.ui.repository_url}:latest"
+      essential    = true
+      portMappings = [
+        { containerPort = 8501, protocol = "tcp" }
+      ]
+
+      environment = [
+        { name = "AWS_REGION",    value = var.aws_region },
+        { name = "S3_BUCKET",     value = aws_s3_bucket.data.bucket },
+        { name = "CLUSTER_NAME",  value = aws_ecs_cluster.this.name },
+        { name = "WORKER_FAMILY", value = aws_ecs_task_definition.worker.family },
+        { name = "SUBNETS",       value = join(",", module.network.public_subnets) }
+      ]
+
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = "/ecs/streamlit-ui"
+          "awslogs-region"        = var.aws_region
+          "awslogs-stream-prefix" = "ui"
+        }
+      }
+    }
+  ])
+}
+
+resource "aws_cloudwatch_log_group" "worker" {
+  name              = "/ecs/worker"
+  retention_in_days = 7
+}
+
+resource "aws_cloudwatch_log_group" "streamlit_ui" {
+  name              = "/ecs/streamlit-ui"
+  retention_in_days = 7
 }
 
 # ECS Service for UI
 resource "aws_ecs_service" "ui" {
   name            = "${var.project_name}-ui-svc"
   cluster         = aws_ecs_cluster.this.id
-  task_definition = aws_ecs_task_definition.ui.arn
+  task_definition = aws_ecs_task_definition.ui.arn   # ← now declared!
   desired_count   = 1
   launch_type     = "FARGATE"
 

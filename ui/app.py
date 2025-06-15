@@ -2,12 +2,12 @@ import os, json, time
 import streamlit as st
 import boto3
 
-# Read from env vars (not st.secrets)
 AWS_REGION    = os.environ["AWS_REGION"]
 S3_BUCKET     = os.environ["S3_BUCKET"]
 CLUSTER_NAME  = os.environ["CLUSTER_NAME"]
 WORKER_FAMILY = os.environ["WORKER_FAMILY"]
 SUBNETS       = os.environ["SUBNETS"].split(",")
+ECS_SG  = [ os.environ["ECS_SG"] ]
 
 st.set_page_config(page_title="Python Code Runner")
 st.title("📦 Python Code Runner")
@@ -36,8 +36,10 @@ if st.button("Run"):
             networkConfiguration={
                 "awsvpcConfiguration": {
                     "subnets": SUBNETS,
-                    "assignPublicIp": "ENABLED"
-                }
+                    "assignPublicIp": "ENABLED",
+                    "securityGroups": ECS_SG
+                },
+
             },
             overrides={"containerOverrides": [{
                 "name": "worker",
