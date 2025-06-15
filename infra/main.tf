@@ -70,6 +70,23 @@ resource "aws_iam_role_policy_attachment" "codepipeline_attach_ecs" {
   role       = aws_iam_role.codepipeline_service.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonECS_FullAccess"
 }
+
+resource "aws_iam_role_policy" "codepipeline_pass_ecs_role" {
+  name = "CodePipelinePassEcsExecutionRole"
+  role = aws_iam_role.codepipeline_service.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "iam:PassRole"
+        Resource = aws_iam_role.ecs_task_execution.arn
+      }
+    ]
+  })
+}
+
 # IAM Roles and Attachments
 resource "aws_iam_role" "ecs_task_execution" {
   name               = "${var.project_name}-ecs-task-exec-role"
@@ -234,15 +251,19 @@ resource "aws_ecs_service" "ui" {
   task_definition = aws_ecs_task_definition.ui.arn
   desired_count   = 1
   launch_type     = "FARGATE"
+
   network_configuration {
     subnets         = module.network.public_subnets
     security_groups = [aws_security_group.alb.id]
+    assign_public_ip = "ENABLED"
   }
+
   load_balancer {
     target_group_arn = aws_lb_target_group.ui_tg.arn
     container_name   = "streamlit-ui"
     container_port   = 8501
   }
+
   depends_on = [aws_lb_listener.http]
 }
 
