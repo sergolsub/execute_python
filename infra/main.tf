@@ -66,6 +66,26 @@ resource "aws_iam_role_policy" "codebuild_artifacts_upload" {
     ]
   })
 }
+resource "aws_security_group" "ecs_tasks" {
+  name        = "${var.project_name}-ecs-sg"
+  description = "Allow ALB ECS on 8501, and all outbound"
+  vpc_id      = module.network.vpc_id
+
+  ingress {
+    from_port       = 8501
+    to_port         = 8501
+    protocol        = "tcp"
+    security_groups = [ aws_security_group.alb.id ]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
 resource "aws_iam_role_policy_attachment" "codepipeline_attach_ecs" {
   role       = aws_iam_role.codepipeline_service.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonECS_FullAccess"
@@ -136,26 +156,50 @@ resource "aws_iam_role_policy_attachment" "codepipeline_attach_codebuild" {
 # Network: VPC & Subnets
 module "network" {
   source  = "terraform-aws-modules/vpc/aws"
-  version = "~> 4.0"
-  name    = "${var.project_name}-vpc"
-  cidr    = "10.0.0.0/16"
-  azs     = ["${var.aws_region}a", "${var.aws_region}b"]
+  version = "~> 5.0"
+
+  name = "${var.project_name}-vpc"
+  cidr = "10.0.0.0/16"
+
+  # two AZs for high availability
+  azs  = ["${var.aws_region}a", "${var.aws_region}b"]
+
+  # public subnets only (tasks get public IPs)
   public_subnets = ["10.0.1.0/24", "10.0.2.0/24"]
+
+  # ensure the IGW and DNS are set up
+  create_igw           = true
+  enable_dns_support   = true
+  enable_dns_hostnames = true
+
+  # tag your public subnets for any integrations (ALB, Kubernetes, etc.)
+  public_subnet_tags = {
+    "kubernetes.io/role/elb" = "1"
+  }
+
+  # (optional) add common tags to all resources
+  tags = {
+    "Environment" = "prod"
+    "ManagedBy"   = "Terraform"
+  }
 }
 
 # ECR Repositories
 resource "aws_ecr_repository" "ui" {
   name = "${var.project_name}-ui"
+  force_delete = true
 }
 resource "aws_ecr_repository" "worker" {
   name = "${var.project_name}-worker"
+  force_delete = true
 }
 
 # Security Group for ALB
 resource "aws_security_group" "alb" {
   name        = "${var.project_name}-alb-sg"
-  description = "Allow HTTP traffic"
+  description = "Allow HTTP from anywhere"
   vpc_id      = module.network.vpc_id
+
   ingress {
     from_port   = 80
     to_port     = 80
@@ -210,6 +254,7 @@ resource "aws_ecs_cluster" "this" {
 # S3 bucket for CodePipeline artifacts
 resource "aws_s3_bucket" "cp_artifacts" {
   bucket = "${var.project_name}-cp-artifacts"
+  force_destroy = true
 }
 resource "aws_s3_bucket_versioning" "cp_artifacts" {
   bucket = aws_s3_bucket.cp_artifacts.id
@@ -254,7 +299,7 @@ resource "aws_ecs_service" "ui" {
 
   network_configuration {
     subnets         = module.network.public_subnets
-    security_groups = [aws_security_group.alb.id]
+    security_groups = [aws_security_group.ecs_tasks.id]
     assign_public_ip = true
   }
 

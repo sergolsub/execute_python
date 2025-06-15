@@ -1,31 +1,38 @@
 variable "aws_region" {
-  description = "AWS region to deploy into"
+  description = "AWS Region to deploy into"
+  type        = string
   default     = "us-east-1"
 }
 
 variable "project_name" {
-  description = "Project name prefix"
+  description = "Prefix for naming AWS resources"
+  type        = string
   default     = "code-runner"
 }
 
 variable "github_owner" {
-  description = "GitHub user or organization"
+  description = "GitHub user or org owning the repo"
+  type        = string
 }
 
 variable "github_repo" {
-  description = "GitHub repository name"
+  description = "Name of the GitHub repository"
+  type        = string
 }
 
 variable "github_repo_https" {
-  description = "HTTPS URL of the GitHub repository"
+  description = "HTTPS URL for cloning the repo (e.g. https://github.com/owner/repo.git)"
+  type        = string
 }
 
 variable "github_branch" {
-  description = "GitHub branch to build"
+  description = "GitHub branch to build and deploy"
+  type        = string
   default     = "main"
 }
 
 variable "github_oauth_token" {
-  description = "GitHub OAuth token with scope public_repo"
+  description = "GitHub Personal Access Token (scope=public_repo for public repos)"
   type        = string
+  sensitive   = true
 }
