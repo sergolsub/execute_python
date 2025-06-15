@@ -1,0 +1,27 @@
+version: 0.2
+
+env:
+  variables:
+    UI_IMAGE: $UI_ECR:latest
+    WORKER_IMAGE: $WORKER_ECR:latest
+
+phases:
+  pre_build:
+    commands:
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $UI_ECR
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $WORKER_ECR
+  build:
+    commands:
+      - cd ui && docker build -t $UI_IMAGE .
+      - cd ../worker && docker build -t $WORKER_IMAGE .
+      - docker push $UI_IMAGE
+      - docker push $WORKER_IMAGE
+      - |
+        cat > imagedefinitions.json <<EOF
+        [
+          {"name":"streamlit-ui","imageUri":"$UI_IMAGE"}
+        ]
+        EOF
+artifacts:
+  files:
+    - imagedefinitions.json
