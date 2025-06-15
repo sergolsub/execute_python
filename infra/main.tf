@@ -255,7 +255,7 @@ resource "aws_ecs_service" "ui" {
   network_configuration {
     subnets         = module.network.public_subnets
     security_groups = [aws_security_group.alb.id]
-    assign_public_ip = "ENABLED"
+    assign_public_ip = true
   }
 
   load_balancer {
