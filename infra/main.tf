@@ -45,7 +45,27 @@ data "aws_iam_policy_document" "codepipeline_assume" {
     actions = ["sts:AssumeRole"]
   }
 }
+resource "aws_iam_role_policy" "codebuild_artifacts_upload" {
+  name = "CodeBuildArtifactsUpload"
+  role = aws_iam_role.codebuild_service.name
 
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowS3ArtifactUpload"
+        Effect = "Allow"
+        Action = [
+          "s3:PutObject",
+          "s3:GetObject",
+          "s3:PutObjectAcl",
+          "s3:GetObjectAcl"
+        ]
+        Resource = "${aws_s3_bucket.cp_artifacts.arn}/*"
+      }
+    ]
+  })
+}
 # IAM Roles and Attachments
 resource "aws_iam_role" "ecs_task_execution" {
   name               = "${var.project_name}-ecs-task-exec-role"
@@ -310,6 +330,7 @@ resource "aws_codepipeline" "pipeline" {
     }
   }
 }
+
 
 # Output UI URL
 output "ui_url" { value = aws_lb.alb.dns_name }
