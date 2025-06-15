@@ -1,21 +1,27 @@
-import os, json, time
+import os
+import json
+import time
 import streamlit as st
 import boto3
+import botocore.exceptions
 
+# Read required settings from env vars
 AWS_REGION    = os.environ["AWS_REGION"]
 S3_BUCKET     = os.environ["S3_BUCKET"]
 CLUSTER_NAME  = os.environ["CLUSTER_NAME"]
 WORKER_FAMILY = os.environ["WORKER_FAMILY"]
 SUBNETS       = os.environ["SUBNETS"].split(",")
-ECS_SG  = [ os.environ["ECS_SG"] ]
+ECS_SG        = [os.environ["ECS_SG"]]
 
 st.set_page_config(page_title="Python Code Runner")
 st.title("📦 Python Code Runner")
 
+# AWS clients
 s3  = boto3.client("s3",    region_name=AWS_REGION)
 ecs = boto3.client("ecs",   region_name=AWS_REGION)
 logs= boto3.client("logs",  region_name=AWS_REGION)
 
+# UI inputs
 zip_file = st.file_uploader("Upload your code ZIP", type="zip")
 s3_link  = st.text_input("S3 link to input dataframe (s3://…)")
 reqs     = st.file_uploader("Upload your requirements.txt", type="txt")
@@ -25,50 +31,81 @@ if st.button("Run"):
         st.error("All three inputs are required.")
     else:
         task_id = str(int(time.time()))
-        # 1) upload
+
+        # 1) Upload the user’s code and requirements
         s3.upload_fileobj(zip_file, S3_BUCKET, f"{task_id}/code.zip")
         s3.upload_fileobj(reqs,    S3_BUCKET, f"{task_id}/requirements.txt")
-        # 2) run task
+
+        # 2) Launch the Fargate task
         resp = ecs.run_task(
             cluster=CLUSTER_NAME,
             launchType="FARGATE",
             taskDefinition=WORKER_FAMILY,
             networkConfiguration={
                 "awsvpcConfiguration": {
-                    "subnets": SUBNETS,
+                    "subnets":        SUBNETS,
                     "assignPublicIp": "ENABLED",
                     "securityGroups": ECS_SG
-                },
-
+                }
             },
-            overrides={"containerOverrides": [{
+            overrides={
+              "containerOverrides": [{
                 "name": "worker",
                 "environment": [
-                    {"name": "CODE_ZIP_S3", "value": f"s3://{S3_BUCKET}/{task_id}/code.zip"},
-                    {"name": "REQS_S3",     "value": f"s3://{S3_BUCKET}/{task_id}/requirements.txt"},
-                    {"name": "DF_S3",       "value": s3_link},
-                    {"name": "OUT_PREFIX",  "value": f"{task_id}/out"},
+                  {"name": "CODE_ZIP_S3", "value": f"s3://{S3_BUCKET}/{task_id}/code.zip"},
+                  {"name": "REQS_S3",     "value": f"s3://{S3_BUCKET}/{task_id}/requirements.txt"},
+                  {"name": "DF_S3",       "value": s3_link},
+                  {"name": "OUT_PREFIX",  "value": f"{task_id}/out"},
                 ]
-            }]}
+              }]
+            }
         )
+
         tasks = resp.get("tasks", [])
         if not tasks:
             st.error("Failed to start ECS task.")
         else:
             arn = tasks[0]["taskArn"]
             st.write("🚀 Task launched:", arn)
-            # 3) wait
+
+            # 3) Wait for it to finish
             ecs.get_waiter("tasks_stopped").wait(cluster=CLUSTER_NAME, tasks=[arn])
-            # 4) logs
-            log_group  = "/ecs/worker"
-            log_stream = arn.split("/")[-1]
-            events     = logs.get_log_events(logGroupName=log_group, logStreamName=log_stream)["events"]
-            st.subheader("Worker logs")
-            for e in events:
-                st.text(e["message"])
-            # 5) results
-            res = json.loads(s3.get_object(Bucket=S3_BUCKET, Key=f"{task_id}/out/result.json")["Body"].read())
+
+            # 4) Fetch logs robustly
+            log_group = "/ecs/worker"
+            task_suffix = arn.split("/")[-1]
+
+            # Find the stream by prefix
+            streams = logs.describe_log_streams(
+                logGroupName        = log_group,
+                logStreamNamePrefix = task_suffix,
+                orderBy             = "LastEventTime",
+                descending          = True,
+                limit               = 1
+            )["logStreams"]
+
+            if not streams:
+                st.warning(f"No log stream found for task {task_suffix}. Try again in a moment.")
+            else:
+                stream_name = streams[0]["logStreamName"]
+                try:
+                    events = logs.get_log_events(
+                        logGroupName  = log_group,
+                        logStreamName = stream_name,
+                        startFromHead = True
+                    )["events"]
+                    st.subheader("Worker logs")
+                    for e in events:
+                        st.text(e["message"])
+                except botocore.exceptions.ResourceNotFoundException:
+                    st.error(f"Log stream {stream_name} not found. Try again shortly.")
+
+            # 5) Load and display the JSON result + link to CSV
+            res_obj = s3.get_object(Bucket=S3_BUCKET, Key=f"{task_id}/out/result.json")
+            result  = json.loads(res_obj["Body"].read())
             st.subheader("Result JSON")
-            st.json(res)
+            st.json(result)
+
+            out_csv_path = f"s3://{S3_BUCKET}/{task_id}/out/dataframe.csv"
             st.subheader("Output DataFrame")
-            st.markdown(f"s3://{S3_BUCKET}/{task_id}/out/dataframe.csv")
+            st.markdown(out_csv_path)

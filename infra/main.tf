@@ -346,8 +346,7 @@ resource "aws_ecs_task_definition" "worker" {
 
       environment = [
         { name = "AWS_REGION", value = var.aws_region },
-        { name = "OUT_BUCKET", value = aws_s3_bucket.data.bucket },
-        { name = "ECS_SG",       value = aws_security_group.ecs_tasks.id }
+        { name = "OUT_BUCKET", value = aws_s3_bucket.data.bucket }
       ]
 
       logConfiguration = {
@@ -385,7 +384,8 @@ resource "aws_ecs_task_definition" "ui" {
         { name = "S3_BUCKET",     value = aws_s3_bucket.data.bucket },
         { name = "CLUSTER_NAME",  value = aws_ecs_cluster.this.name },
         { name = "WORKER_FAMILY", value = aws_ecs_task_definition.worker.family },
-        { name = "SUBNETS",       value = join(",", module.network.public_subnets) }
+        { name = "SUBNETS",       value = join(",", module.network.public_subnets) },
+        { name = "ECS_SG",        value = aws_security_group.ecs_tasks.id }
       ]
 
       logConfiguration = {
