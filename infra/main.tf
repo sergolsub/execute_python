@@ -79,7 +79,7 @@ resource "aws_iam_role" "codepipeline_service" {
 }
 resource "aws_iam_role_policy_attachment" "codepipeline_attach_pipeline" {
   role       = aws_iam_role.codepipeline_service.name
-  policy_arn = "arn:aws:iam::aws:policy/AWSCodePipelineFullAccess"
+  policy_arn = "arn:aws:iam::aws:policy/AWSCodePipeline_FullAccess"
 }
 resource "aws_iam_role_policy_attachment" "codepipeline_attach_s3" {
   role       = aws_iam_role.codepipeline_service.name
@@ -139,10 +139,11 @@ resource "aws_lb" "alb" {
   subnets            = module.network.public_subnets
 }
 resource "aws_lb_target_group" "ui_tg" {
-  name     = "${var.project_name}-ui-tg"
-  port     = 8501
-  protocol = "HTTP"
-  vpc_id   = module.network.vpc_id
+  name        = "${var.project_name}-ui-tg"
+  port        = 8501
+  protocol    = "HTTP"
+  vpc_id      = module.network.vpc_id
+  target_type = "ip"
 }
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.alb.arn
@@ -158,13 +159,9 @@ resource "aws_ecs_cluster" "this" {
   name = "${var.project_name}-cluster"
 }
 
-# S3 bucket for CodePipeline artifacts (no ACL here)
+# S3 bucket for CodePipeline artifacts
 resource "aws_s3_bucket" "cp_artifacts" {
   bucket = "${var.project_name}-cp-artifacts"
-}
-resource "aws_s3_bucket_acl" "cp_artifacts_acl" {
-  bucket = aws_s3_bucket.cp_artifacts.id
-  acl    = "private"
 }
 resource "aws_s3_bucket_versioning" "cp_artifacts" {
   bucket = aws_s3_bucket.cp_artifacts.id
