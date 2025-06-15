@@ -1,38 +1,25 @@
 version: 0.2
 
 phases:
-  install:
-    runtime-versions:
-      docker: 19
   pre_build:
     commands:
-      - echo Logging in to Amazon ECR...
-      # build the full image URIs here
+      - echo Logging in to Amazon ECR…
       - export UI_IMAGE="${UI_ECR}:latest"
       - export WORKER_IMAGE="${WORKER_ECR}:latest"
-      # login
-      - aws ecr get-login-password --region $AWS_DEFAULT_REGION \
-          | docker login --username AWS --password-stdin $UI_ECR
-      - aws ecr get-login-password --region $AWS_DEFAULT_REGION \
-          | docker login --username AWS --password-stdin $WORKER_ECR
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $UI_ECR
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $WORKER_ECR
 
   build:
     commands:
       - echo Build started on `date`
-      - echo Building the UI image…
       - cd ui
       - docker build -t $UI_IMAGE .
       - cd ../worker
-      - echo Building the worker image…
       - docker build -t $WORKER_IMAGE .
-      - echo Build complete on `date`
-      # push both images
+      - echo Pushing images…
       - docker push $UI_IMAGE
       - docker push $WORKER_IMAGE
-      # write imagedefinitions.json for CodePipeline → ECS
-      - |
-        printf '[{"name":"streamlit-ui","imageUri":"%s"}]\n' "$UI_IMAGE" \
-          > imagedefinitions.json
+      - printf '[{"name":"streamlit-ui","imageUri":"%s"}]\n' "$UI_IMAGE" > imagedefinitions.json
 
 artifacts:
   files:
